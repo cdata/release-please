@@ -636,6 +636,7 @@ export class Manifest {
 
     // split commits by path
     this.logger.info(`Splitting ${commits.length} commits by path`);
+
     const cs = new CommitSplit({
       includeEmpty: true,
       packagePaths: Object.keys(this.repositoryConfig),
@@ -650,6 +651,7 @@ export class Manifest {
         releaseShasByPath[path]
       );
     }
+
     const commitExclude = new CommitExclude(this.repositoryConfig);
     commitsPerPath = commitExclude.excludeCommits(commitsPerPath);
 
@@ -673,6 +675,17 @@ export class Manifest {
           notes: '',
         };
       }
+    }
+
+    this.logger.info(
+      `Post-processing commits via ${this.plugins.length} plugins`
+    );
+    for (const plugin of this.plugins) {
+      commitsPerPath = await plugin.postProcessCommitsPerPath(
+        commitsPerPath,
+        releasesByPath,
+        commits
+      );
     }
 
     let strategies = strategiesByPath;

@@ -40,6 +40,7 @@ export interface TargetDependencies {
 
 export interface CargoWorkspace {
   members?: string[];
+  dependencies?: CargoDependencies;
 }
 
 export interface CargoPackage {
@@ -55,6 +56,8 @@ export interface CargoDependency {
   version?: string;
   path?: string;
   registry?: string;
+  features?: string[];
+  workspace?: boolean;
 }
 
 export type DepKind =

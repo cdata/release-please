@@ -42,6 +42,14 @@ export abstract class ManifestPlugin {
     this.logger = logger;
   }
 
+  async postProcessCommitsPerPath(
+    commitsPerPath: Record<string, Commit[]>,
+    _releasesByPath: Record<string, Release>,
+    _allCommits: Commit[]
+  ): Promise<Record<string, Commit[]>> {
+    return commitsPerPath;
+  }
+
   /**
    * Perform post-processing on commits, e.g, sentence casing them.
    * @param {Commit[]} commits The set of commits that will feed into release pull request.

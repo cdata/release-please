@@ -942,6 +942,10 @@ export class GitHub {
    * @throws {FileNotFoundError} if the file cannot be found
    * @throws {GitHubAPIError} on other API errors
    */
+  // CDATA: This appears to accept a SHA as well as branch;
+  // under the hood, the "file cache" implementation seems to
+  // read trees as shas (although this must somehow be able to
+  // disambiguate a ref from a sha....)
   async getFileContentsOnBranch(
     path: string,
     branch: string
@@ -956,6 +960,22 @@ export class GitHub {
       throw e;
     }
   }
+
+  // async getFileContentsAtSha(
+  //   path: string,
+  //   sha: string
+  // ): Promise<GitHubFileContents> {
+  //   this.logger.debug(`Fetching ${path} from sha ${sha}`);
+  //   try {
+  //     this.octokit.
+  //     return await this.fileCache.getFileContents(path, branch);
+  //   } catch (e) {
+  //     if (e instanceof MissingFileError) {
+  //       throw new FileNotFoundError(path);
+  //     }
+  //     throw e;
+  //   }
+  // }
 
   async getFileJson<T>(path: string, branch: string): Promise<T> {
     const content = await this.getFileContentsOnBranch(path, branch);
