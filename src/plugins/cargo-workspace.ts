@@ -74,9 +74,10 @@ interface CrateInfo {
   manifest: CargoManifest;
 }
 
+// TODO: Should also take workspace-level feature flag changes into account
 function workspaceDependencyVersionMap(
   cargoWorkspaceManifest: CargoManifest
-): Record<string, Version> {
+): Record<string, string> {
   const dependencies = cargoWorkspaceManifest.workspace?.dependencies;
 
   if (!dependencies) {
@@ -97,11 +98,7 @@ function workspaceDependencyVersionMap(
         value: [string, string | undefined]
       ) => value is [string, string]
     )
-    .map(
-      depVersion =>
-        [depVersion[0], Version.parse(depVersion[1])] as [string, Version]
-    )
-    .reduce<Record<string, Version>>((initial, next) => {
+    .reduce<Record<string, string>>((initial, next) => {
       initial[next[0]] = next[1];
       return initial;
     }, {});
@@ -170,6 +167,8 @@ export class CargoWorkspace extends WorkspacePlugin<CrateInfo> {
   protected async getWorkspaceCargoManifestAtBranchOrSha(
     branchOrSha: string
   ): Promise<CargoManifest> {
+    this.logger.info(`Reading workspace Cargo manifest from '${branchOrSha}'`);
+
     return parseCargoManifest(
       (await this.getWorkspaceCargoManifestContentAtBranchOrSha(branchOrSha))
         .parsedContent
@@ -182,7 +181,7 @@ export class CargoWorkspace extends WorkspacePlugin<CrateInfo> {
     allCommits: Commit[]
   ): Promise<Record<string, Commit[]>> {
     this.logger.info(
-      'Post-processing commits to look for relevant workspace manifest dependency changes...'
+      `Post-processing ${allCommits.length} commits to look for relevant workspace manifest dependency changes...`
     );
     const workspaceCargoManifest = await this.getWorkspaceCargoManifest();
     const workspaceDependencies =
@@ -196,64 +195,58 @@ export class CargoWorkspace extends WorkspacePlugin<CrateInfo> {
       return commitsPerPath;
     }
 
-    const latestCommitByPath: Record<string, Commit> = {};
+    const workspaceManifestCommitsByPath: Record<string, Commit[]> = {};
 
-    // Map the latest commit within a path to that path
-    for (const path of Object.keys(commitsPerPath)) {
-      const commits = commitsPerPath[path];
-      const latestCommit = commits[commits.length - 1];
-
-      if (latestCommit) {
-        latestCommitByPath[path] = latestCommit;
+    for (const [path, release] of Object.entries(releasesByPath)) {
+      if (release.sha) {
+        this.logger.info(
+          `Looking for ${path} release SHA ${release.sha} among all considered commits`
+        );
+        const pathHistoryStartIndex = allCommits.findIndex(
+          commit => commit.sha === release.sha
+        );
+        if (pathHistoryStartIndex > -1) {
+          this.logger.info(`Found SHA at ${pathHistoryStartIndex}..`);
+          workspaceManifestCommitsByPath[path] = allCommits
+            .slice(0, pathHistoryStartIndex)
+            .reverse();
+          continue;
+        } else {
+          this.logger.warn(
+            `Last release SHA for ${path} (${release.sha}) did not occur in the set of all considered commits`
+          );
+        }
+      } else {
+        this.logger.warn(`Last release SHA for ${path} was not given!`);
       }
+      workspaceManifestCommitsByPath[path] = [];
     }
 
-    const workspaceManifestCommitsInOrder: Commit[] = [];
-    const workspaceManifestCommitsUntilPathLatestCommit: Record<
-      string,
-      Commit[]
-    > = {};
+    let hasWorkspaceManifestCommits = false;
 
-    // Walk all commits, find the ones that include changes to the workspace
-    // manifest, and for each package map the workspace manifest changes that
-    // occurred _before_ the last change to that package to the package's path
-    for (const commit of allCommits) {
-      if (commit.files?.includes('Cargo.toml')) {
-        workspaceManifestCommitsInOrder.push(commit);
-      }
-
-      for (const path in latestCommitByPath) {
-        const latestCommit = latestCommitByPath[path];
-        if (latestCommit && latestCommit.sha === commit.sha) {
-          const pathCommits = commitsPerPath[path] || [];
-          workspaceManifestCommitsUntilPathLatestCommit[path] =
-            workspaceManifestCommitsInOrder
-              .slice()
-              // Filter commits that are already in the path commits
-              .filter(
-                commit =>
-                  !pathCommits.find(pathCommit => pathCommit.sha === commit.sha)
-              );
-        }
+    for (const [path, commits] of Object.entries(
+      workspaceManifestCommitsByPath
+    )) {
+      workspaceManifestCommitsByPath[path] = commits.filter(commit =>
+        commit.files?.includes('Cargo.toml')
+      );
+      if (workspaceManifestCommitsByPath[path].length > 0) {
+        hasWorkspaceManifestCommits = true;
       }
     }
 
     // Make sure the workspace manifest was actually updated before proceding
-    if (workspaceManifestCommitsInOrder.length === 0) {
+    if (!hasWorkspaceManifestCommits) {
       this.logger.info('No commits have touched the workspace manifest');
       // No commits to the workspace manifest, so cut out early
       return commitsPerPath;
     }
 
-    // Get the latest versions of all workspace dependencies
-    // const targetBranchWorkspaceDependencyVersions =
-    //   workspaceDependencyVersionMap(workspaceDependencies);
-
     // Walk over all package paths with commits associated with them, read their
     // manifests, and if they have workspace-inherited dependencies, compare the
     // workspace manifest from their last release to the one on the target
     // branch.
-    for (const packagePath in Object.keys(commitsPerPath)) {
+    for (const packagePath in commitsPerPath) {
       if (packagePath === ROOT_PROJECT_PATH) {
         // Ignore the workspace-level Cargo manifest
         continue;
@@ -268,7 +261,17 @@ export class CargoWorkspace extends WorkspacePlugin<CrateInfo> {
         cargoManifestContents.parsedContent
       );
 
-      const packageDependencies = cargoManifest.dependencies;
+      let packageDependencies = Object.entries(
+        cargoManifest.dependencies ?? {}
+      );
+      for (const [_, targetScope] of Object.entries(
+        cargoManifest.target ?? {}
+      )) {
+        packageDependencies = packageDependencies.concat(
+          Object.entries(targetScope.dependencies ?? {})
+        );
+      }
+
       if (!packageDependencies) {
         this.logger.info(
           `Crate at ${packagePath} has no dependencies, skipping workspace dependency check...`
@@ -279,7 +282,7 @@ export class CargoWorkspace extends WorkspacePlugin<CrateInfo> {
 
       // Get all the dependencies in the latest package manifest that are inherited
       // from the workspace
-      const packageWorkspaceDependencies = Object.entries(packageDependencies)
+      const packageWorkspaceDependencies = packageDependencies
         .filter(
           (([_, dependency]) =>
             typeof dependency !== 'string' &&
@@ -304,7 +307,7 @@ export class CargoWorkspace extends WorkspacePlugin<CrateInfo> {
 
       if (!previousRelease) {
         this.logger.info(
-          `Crate at ${packagePath} has not be released previously, skipping workspace dependency check...`
+          `Crate at ${packagePath} has not been released previously, skipping workspace dependency check...`
         );
         // No prior release for this package, so I guess we can skip?
         continue;
@@ -312,24 +315,42 @@ export class CargoWorkspace extends WorkspacePlugin<CrateInfo> {
 
       // Get the workspace dependency versions as of the last release of this
       // package
-      let lastWorkspaceDependencyVersions = workspaceDependencyVersionMap(
-        await this.getWorkspaceCargoManifestAtBranchOrSha(previousRelease.sha)
-      );
+      let previousWorkspaceDependencyVersions: Record<string, string> = {};
 
-      const workspaceCommits =
-        workspaceManifestCommitsUntilPathLatestCommit[packagePath] || [];
+      try {
+        this.logger.info(
+          `Attempting to find Cargo manifest for last release of ${packagePath} (${previousRelease.tag.toString()})`
+        );
+        previousWorkspaceDependencyVersions = workspaceDependencyVersionMap(
+          await this.getWorkspaceCargoManifestAtBranchOrSha(
+            previousRelease.tag.toString()
+          )
+        );
+      } catch (_) {
+        this.logger.warn(
+          `No workspace Cargo manifest found for the last release of ${packagePath}`
+        );
+      }
+
+      const workspaceManifestCommits =
+        workspaceManifestCommitsByPath[packagePath];
       const extraCommitsToIncludeForPath: Commit[] = [];
 
       // Walk the workspace commits that preceed each path's latest commit
       // and check them one at a time for version changes
-      for (const commit of workspaceCommits) {
+      for (const commit of workspaceManifestCommits) {
+        // TODO: Optimize by doing this once for whole list of commits
         const nextWorkspaceDependencyVersions = workspaceDependencyVersionMap(
           await this.getWorkspaceCargoManifestAtBranchOrSha(commit.sha)
         );
 
         for (const dependencyName in packageWorkspaceDependencies) {
-          const lastWorkspaceDependency =
-            lastWorkspaceDependencyVersions[dependencyName];
+          this.logger.info(
+            `Checking workspace dependency '${dependencyName}' for ${packagePath}`
+          );
+
+          const previousWorkspaceDependency =
+            previousWorkspaceDependencyVersions[dependencyName];
           const nextWorkspaceDependency =
             nextWorkspaceDependencyVersions[dependencyName];
 
@@ -337,20 +358,27 @@ export class CargoWorkspace extends WorkspacePlugin<CrateInfo> {
           // maps, it means that the workspace-level dependency was just added
           // or just removed.
 
+          // TODO: Should compare features as well to see if they changed
           const dependencyChanged =
-            !lastWorkspaceDependency ||
-            !nextWorkspaceDependency ||
-            lastWorkspaceDependency.compare(nextWorkspaceDependency) !== 0;
+            previousWorkspaceDependency !== nextWorkspaceDependency;
 
           if (dependencyChanged) {
+            const previousVersion =
+              previousWorkspaceDependency || 'not present';
+            const nextVersion = nextWorkspaceDependency || 'not present';
+
             this.logger.info(
-              `Commit ${commit.sha} includes a workspace dependency change that affects ${packagePath}`
+              `Commit ${commit.sha} includes a workspace dependency change that affects ${packagePath} ('${dependencyName}' changed from ${previousVersion} to ${nextVersion})`
             );
             extraCommitsToIncludeForPath.push(commit);
+            // Break so that we only include this commit once; other deps may
+            // have impacted this package too, but we only need to check for one
+            // to include the commit.
+            break;
           }
         }
 
-        lastWorkspaceDependencyVersions = nextWorkspaceDependencyVersions;
+        previousWorkspaceDependencyVersions = nextWorkspaceDependencyVersions;
       }
 
       if (extraCommitsToIncludeForPath.length) {

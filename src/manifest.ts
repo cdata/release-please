@@ -677,9 +677,6 @@ export class Manifest {
       }
     }
 
-    this.logger.info(
-      `Post-processing commits via ${this.plugins.length} plugins`
-    );
     for (const plugin of this.plugins) {
       commitsPerPath = await plugin.postProcessCommitsPerPath(
         commitsPerPath,

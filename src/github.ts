@@ -961,22 +961,6 @@ export class GitHub {
     }
   }
 
-  // async getFileContentsAtSha(
-  //   path: string,
-  //   sha: string
-  // ): Promise<GitHubFileContents> {
-  //   this.logger.debug(`Fetching ${path} from sha ${sha}`);
-  //   try {
-  //     this.octokit.
-  //     return await this.fileCache.getFileContents(path, branch);
-  //   } catch (e) {
-  //     if (e instanceof MissingFileError) {
-  //       throw new FileNotFoundError(path);
-  //     }
-  //     throw e;
-  //   }
-  // }
-
   async getFileJson<T>(path: string, branch: string): Promise<T> {
     const content = await this.getFileContentsOnBranch(path, branch);
     return JSON.parse(content.parsedContent);
