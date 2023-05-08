@@ -37,8 +37,12 @@
       "sortSnapshots": true
     }
   },
+  "overrides": {
+    "@octokit/types": "=9.0.0",
+    "@octokit/openapi-types": "=16.0.0"
+  },
   "devDependencies": {
-    "@octokit/types": "^9.0.0",
+    "@octokit/types": "=9.0.0",
     "@types/chai": "^4.1.7",
     "@types/diff": "^5.0.2",
     "@types/iarna__toml": "^2.0.1",
